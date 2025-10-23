@@ -2,9 +2,7 @@
 
 import * as React from "react";
 
-
-import { PDFDocumentProxy, getDocument } from "pdfjs-dist";
-import "pdfjs-dist/build/pdf.worker.mjs";
+// pdfjs is dynamically imported inside effects to avoid server-side execution
 
 type Marker = { x: number; y: number; page: number } | null;
 type Props = {
@@ -24,7 +22,7 @@ export function PdfPreviewWithMarker({
   signaturePreviewUrl,
 }: Props) {
   const [numPages, setNumPages] = React.useState(0);
-  const [pdfDoc, setPdfDoc] = React.useState<PDFDocumentProxy | null>(null);
+  const [pdfDoc, setPdfDoc] = React.useState<any | null>(null);
   const [pageSizes, setPageSizes] = React.useState<{ w: number; h: number }[]>([]);
   const [sigSize, setSigSize] = React.useState<{ w: number; h: number } | null>(null);
 
@@ -35,18 +33,44 @@ export function PdfPreviewWithMarker({
       setPageSizes([]);
       return;
     }
-    getDocument(fileUrl).promise.then((doc) => {
-      setPdfDoc(doc);
-      setNumPages(doc.numPages);
-      Promise.all(
-        Array.from({ length: doc.numPages }, (_, i) =>
-          doc.getPage(i + 1).then((page) => {
-            const viewport = page.getViewport({ scale: 1 });
-            return { w: viewport.width, h: viewport.height };
-          })
-        )
-      ).then(setPageSizes);
-    });
+    let cancelled = false;
+    (async () => {
+      try {
+        // Load pdfjs in the browser only to avoid server-side DOM references
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore dynamic import of pdfjs for browser-only use
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf");
+        // Use local worker file instead of CDN
+        const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+        const { getDocument, GlobalWorkerOptions } = pdfjs;
+        if (typeof window !== "undefined") {
+          // Create a blob URL for the worker code
+          const workerBlob = new Blob([worker.default], { type: "text/javascript" });
+          GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob);
+        }
+
+        const loadingTask = getDocument(fileUrl as string);
+        const doc = await loadingTask.promise;
+        if (cancelled) return;
+        setPdfDoc(doc as any);
+        setNumPages(doc.numPages);
+        const sizes = await Promise.all(
+          Array.from({ length: doc.numPages }, (_, i) =>
+            doc.getPage(i + 1).then((page: any) => {
+              const viewport = page.getViewport({ scale: 1 });
+              return { w: viewport.width, h: viewport.height };
+            })
+          )
+        );
+        if (!cancelled) setPageSizes(sizes as { w: number; h: number }[]);
+      } catch (err) {
+        // fail silently — preview will not render
+        console.error("Failed to load pdfjs", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [fileUrl]);
 
   React.useEffect(() => {
@@ -67,10 +91,10 @@ export function PdfPreviewWithMarker({
   // Render each page as a canvas
   React.useEffect(() => {
     if (!pdfDoc || !numPages) return;
-    for (let i = 1; i <= numPages; i++) {
+        for (let i = 1; i <= numPages; i++) {
       const canvas = document.getElementById(`pdf-canvas-${i}`) as HTMLCanvasElement | null;
       if (!canvas) continue;
-      pdfDoc.getPage(i).then((page) => {
+      pdfDoc.getPage(i).then((page: any) => {
         const viewport = page.getViewport({ scale: 1.2 });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
